@@ -1,7 +1,7 @@
 # Copy to compose.yml next to a filled-in .env (see .env.example), then
-# `docker compose up -d`. The page is at http://localhost:8080 and the
-# agent contract at http://localhost:8080/llms.txt. `docker compose down`
-# removes the container and everything in /data.
+# `docker compose up -d`. The decision queue is at http://localhost:8080
+# and the agent contract at http://localhost:8080/llms.txt.
+# `docker compose down` forgets every decision and its files.
 services:
   sandbox:
     image: ghcr.io/santiagosayshey/sandbox:develop

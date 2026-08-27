@@ -1,51 +1,118 @@
 # sandbox
 
-An ephemeral scratch space for this session. Files you upload appear
-instantly in a browser page at {{PUBLIC_URL}} so a person can check them,
-and GET requests to configured upstreams ({{UPSTREAMS}}) are forwarded with
-the right credentials injected, so you never need or see an API key.
+Sandbox is a session-scoped service between you and the world you are not
+trusted with directly. It does three things:
 
-Nothing here persists. /data is a RAM disk: a reset or a container restart
-empties it. Copy anything worth keeping into the repository.
+- Decisions. You post a question with a fixed set of answers and the files
+  that make it concrete; the person answers in a browser at {{PUBLIC_URL}}
+  and you read the answer here. Choosing a poster, approving a theme,
+  comparing a replacement, confirming a change, asking a question.
+- Upstreams. Your requests to configured APIs ({{UPSTREAMS}}) go through
+  the sandbox, which injects the credential and enforces an allow list.
+  You never need or see a key.
+- Nothing kept. A reset or a container restart forgets every decision and
+  deletes every file. Copy anything worth keeping into the repository.
 
-## Session
+## Loop
 
-    curl -s {{PUBLIC_URL}}/llms.txt          # this text
-    curl -s -X POST {{PUBLIC_URL}}/reset   # start clean
-    ...work...
-    curl -s -X POST {{PUBLIC_URL}}/reset   # leave nothing behind
+1. Prepare everything you can decide-ready (candidates encoded, files
+   named, YAML written).
+2. Post one decision per question. Post them all before waiting.
+3. Tell the person in chat what is waiting at {{PUBLIC_URL}}.
+4. Long-poll /answers. Act on each answer as it arrives.
+5. A verdict of "changes" or "none" asks for another attempt: post a new
+   decision with "supersedes" set to the old id, using the note.
+6. Stop when every decision you posted has an answer that is not
+   "changes" or "none". Then do what was approved and reset.
 
-Reset when the task is finished.
+If /answers returns [] a few times in a row, ask in chat instead of
+waiting further.
 
-## Files
+## Types
 
-Paths are relative to /data. Directories are created as needed and exist
-only while a file is in them. Use the layout the files will have in the
-repository so they can be copied across unchanged. Percent-encode spaces
-and parentheses in URLs; the path on disk is the decoded form.
+    choose    2 or more options; they pick min..max of them (default 1),
+              or "none" with a note if none is right
+    approve   1 option; "accept", "changes" or "reject"
+    compare   options "current" and "new"; "new", "current" or "changes"
+    confirm   no options; "yes" or "no"
+    ask       no options; a free-text answer arrives in "note"
 
-    # upload (201 created, 204 replaced)
-    curl -s -X PUT --data-binary @poster.jpg \
-      "{{PUBLIC_URL}}/files/assets/movies/429/poster.jpg"
+Every answer may carry a note. Read it.
 
-    # list, as text
-    curl -s -H 'Accept: text/plain' {{PUBLIC_URL}}/tree
+## Posting a decision
 
-    # download
-    curl -s -o out.jpg "{{PUBLIC_URL}}/files/assets/x/poster.jpg"
+Multipart: a "spec" field with the JSON, plus one part per file named in
+the spec. Files are matched by filename; names must be plain (no
+directories). A decision with no files can be bare JSON.
 
-    # delete a file or a directory (recursive)
-    curl -s -X DELETE "{{PUBLIC_URL}}/files/assets/x"
+    curl -s -X POST {{PUBLIC_URL}}/decisions \
+      -F 'spec={
+        "title": "Poster for The Good, the Bad and the Ugly (1966)",
+        "prompt": "Three TMDb candidates, encoded and cropped to 2:3. Current poster attached.",
+        "type": "choose",
+        "options": [
+          {"id": "a", "label": "Italian 1966 one-sheet", "file": "a.jpg"},
+          {"id": "b", "label": "Criterion-style",        "file": "b.jpg"},
+          {"id": "c", "label": "Textless key art",       "file": "c.jpg"}
+        ],
+        "attachments": [{"name": "current poster", "file": "current.jpg"}]
+      }' \
+      -F file=@a.jpg -F file=@b.jpg -F file=@c.jpg -F file=@current.jpg
 
-    # delete everything
-    curl -s -X POST {{PUBLIC_URL}}/reset
+    curl -s -X POST {{PUBLIC_URL}}/decisions \
+      -F 'spec={"title":"Replace the background?","type":"compare",
+           "options":[{"id":"current","file":"old.jpg"},{"id":"new","file":"new.jpg"}]}' \
+      -F file=@old.jpg -F file=@new.jpg
 
-Uploads are capped per file (default 50 MB) and the RAM disk has a fixed
-size; a full disk fails the upload rather than the host.
+    curl -s -X POST {{PUBLIC_URL}}/decisions \
+      -F 'spec={"title":"Theme for For a Few Dollars More (1965)","type":"approve",
+           "prompt":"Main title, 60 s, 2 s fade.",
+           "options":[{"id":"theme","file":"theme.mp3"}]}' \
+      -F file=@theme.mp3
 
-The page at {{PUBLIC_URL}} previews images, audio, video and text (YAML,
-JSON, Markdown, plain text) and updates live. Other types show a download
-link. Tell the person which path to look at.
+    curl -s -X POST -H 'Content-Type: application/json' {{PUBLIC_URL}}/decisions \
+      -d '{"title":"Remove the three Agregarr collections?","type":"confirm"}'
+
+    curl -s -X POST -H 'Content-Type: application/json' {{PUBLIC_URL}}/decisions \
+      -d '{"title":"Which TVDb id is Agent Carter (2015)?","type":"ask",
+           "prompt":"281485 (2015 series) or 362472 (2018 short)?"}'
+
+Spec fields:
+
+    title        required
+    prompt       what you did and what you want; shown above the options
+    type         choose | approve | compare | confirm | ask
+    options      [{id, label?, file?}]   what can be picked
+    attachments  [{name?, file}]         context shown but not pickable
+    min, max     choose only; how many to pick (default 1 and 1)
+    none         choose only; whether "none" is allowed (default true)
+    supersedes   id of the decision this one revises
+
+Images, audio, video and text (YAML, JSON, Markdown, plain) are shown
+inline; anything else is a download link. Images show their dimensions,
+aspect ratio and size, so put the encoded final file in the option, not a
+draft. Per-file limit is 50 MB by default.
+
+The response is the decision as JSON with its "id" (d1, d2, ...).
+
+## Reading answers
+
+    curl -s "{{PUBLIC_URL}}/answers?since=0&wait=300"
+
+Returns every answer with a sequence number after "since", oldest first.
+With "wait", the request blocks until at least one such answer exists or
+the seconds elapse (max 300), then returns [] if nothing came. Pass the
+last "seq" you saw as the next "since"; nothing is missed or repeated.
+
+    [{"decision":"d1","seq":7,"verdict":"selected","selected":["b"],
+      "note":"the blue one","at":"..."}]
+
+Verdicts by type: choose -> selected (with "selected" ids) or none;
+approve -> accept, changes, reject; compare -> new, current, changes;
+confirm -> yes, no; ask -> answered (the text is in "note").
+
+    GET {{PUBLIC_URL}}/decisions        every decision with its answer, newest first
+    GET {{PUBLIC_URL}}/decisions/<id>   one decision
 
 ## Upstreams
 
@@ -54,43 +121,18 @@ Each upstream allows only the requests listed for it; anything else is
 
     curl -s {{PUBLIC_URL}}/upstreams      # {"tmdb": ["GET /3/movie/*", ...], ...}
 
-    curl -s "{{PUBLIC_URL}}/tmdb/3/movie/429"
     curl -s "{{PUBLIC_URL}}/tmdb/3/search/movie?query=A%20Fistful%20of%20Dollars&year=1964"
     curl -s "{{PUBLIC_URL}}/tmdb/3/movie/429/images?include_image_language=en,null"
     curl -s -H 'Accept: application/json' "{{PUBLIC_URL}}/plex/library/sections"
-    curl -s -H 'Accept: application/json' "{{PUBLIC_URL}}/plex/library/metadata/12345"
 
 The path after /<upstream>/ is the upstream's own path and query, exactly
-as its API documents them. Do not add an API key, token or Authorization
-for the upstream; the server injects the credential and drops any
-Authorization header you send before forwarding. Plex answers XML unless asked for JSON.
+as its API documents them. Do not add a key or token; the server injects
+the credential and drops any Authorization header you send. Plex answers
+XML unless asked for JSON. TMDb image files live on
+https://image.tmdb.org/t/p/original<file_path> and need no key.
 
-TMDb image files live on https://image.tmdb.org/t/p/original<file_path>
-and need no key; fetch them directly and upload the result.
+## Housekeeping
 
-## Typical Kometa flow
-
-1. Reset.
-2. Look the title up: /tmdb/3/search/movie?query=..., then
-   /tmdb/3/movie/<id>/images for artwork candidates.
-3. Download the artwork and upload it under the exact path it will have
-   in the repository's Kometa config, e.g. assets/movies/<tmdb id>/poster.jpg
-   (or background.jpg, theme.mp3). Check the repository's own
-   documentation for its asset layout and size limits before uploading.
-4. Upload the metadata YAML alongside, e.g. metadata/movies.yml.
-5. Ask the person to check {{PUBLIC_URL}}.
-6. Copy the approved files into the repository checkout, then reset.
-
-## Routes
-
-    GET    /                    page
-    GET    /tree                HTML fragment, or text with Accept: text/plain
-    GET    /preview/<path>      HTML fragment
-    GET    /events              SSE, event "tree"
-    GET    /files/<path>        raw file
-    PUT    /files/<path>        upload
-    DELETE /files/<path>        delete
-    POST   /reset               empty /data
-    GET    /<upstream>/<path>   proxied, subject to the allow list
-    GET    /upstreams           JSON list of names
-    GET    /llms.txt  /healthz  /version
+    curl -s -X POST {{PUBLIC_URL}}/reset    # forget everything
+    curl -s {{PUBLIC_URL}}/healthz
+    curl -s {{PUBLIC_URL}}/version

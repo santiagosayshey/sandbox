@@ -11,63 +11,183 @@
 <body hx-ext="sse" sse-connect="/events">
 <header>
   <b>sandbox</b>
-  <span class="muted">{{.Dir}}</span>
-  <button hx-post="/reset" hx-confirm="Delete everything in the sandbox?" hx-swap="none">reset</button>
+  <span id="counts" class="muted"></span>
+  <button hx-post="/reset" hx-confirm="Forget every decision and delete its files?" hx-swap="none">reset</button>
   <span class="status">live · {{.Host}} · {{.Version}}</span>
 </header>
-<main>
-  <nav id="tree" sse-swap="tree" hx-swap="innerHTML">{{template "tree" .Tree}}</nav>
-  <section id="preview"><p class="empty">Select a file.</p></section>
-</main>
+<main id="queue" sse-swap="queue" hx-swap="innerHTML">{{template "queue" .}}</main>
+
+<div id="lb" hidden>
+  <div class="bar">
+    <span id="lb-name"></span>
+    <span id="lb-meta" class="muted"></span>
+    <span class="muted right"><kbd>Esc</kbd> close · <kbd>1</kbd> actual pixels · <kbd>←</kbd> <kbd>→</kbd> next</span>
+  </div>
+  <img id="lb-img" alt="">
+</div>
+
 <script>
-  // Keep the selected file highlighted across tree swaps and refresh its
-  // preview when the tree changes, since the file itself may have changed.
-  var selected = null;
-  function mark() {
-    document.querySelectorAll('#tree span.sel').forEach(function (el) { el.classList.remove('sel'); });
-    if (!selected) return;
-    var el = document.querySelector('#tree span[data-path="' + CSS.escape(selected) + '"]');
-    if (el) el.classList.add('sel');
-  }
+(function () {
+  // Per-decision UI state that survives queue re-renders from the SSE
+  // stream: which options are picked and what is typed in the note.
+  var picked = {}, notes = {};
+
+  function decisionOf(el) { var a = el.closest('article[data-id]'); return a ? a.dataset.id : null; }
+
   document.body.addEventListener('click', function (e) {
-    var el = e.target.closest('#tree span[data-path]');
-    if (!el) return;
-    selected = el.dataset.path;
-    mark();
+    var opt = e.target.closest('.opt[data-option]');
+    if (opt && !e.target.closest('.zoom')) {
+      var art = opt.closest('article'), id = art.dataset.id, max = +art.dataset.max || 1;
+      var set = picked[id] || (picked[id] = []);
+      var i = set.indexOf(opt.dataset.option);
+      if (i >= 0) set.splice(i, 1);
+      else { if (max === 1) set.length = 0; if (set.length < max) set.push(opt.dataset.option); }
+      applyPicks(art);
+    }
+    var z = e.target.closest('.zoom');
+    if (z) { e.preventDefault(); openLightbox(z); }
   });
-  document.body.addEventListener('htmx:sseMessage', function (e) {
-    if (e.detail.type !== 'tree') return;
-    document.body.classList.remove('offline');
-    setTimeout(function () {
-      mark();
-      if (selected) {
-        if (document.querySelector('#tree span[data-path="' + CSS.escape(selected) + '"]')) {
-          htmx.ajax('GET', '/preview/' + selected.split('/').map(encodeURIComponent).join('/'), '#preview');
-        } else {
-          selected = null;
-          document.getElementById('preview').innerHTML = '<p class="empty">Select a file.</p>';
-        }
-      }
-    }, 0);
+
+  document.body.addEventListener('input', function (e) {
+    if (e.target.matches('textarea[name=note]')) notes[decisionOf(e.target)] = e.target.value;
   });
+
+  function applyPicks(art) {
+    var set = picked[art.dataset.id] || [];
+    art.querySelectorAll('.opt[data-option]').forEach(function (o) {
+      o.classList.toggle('picked', set.indexOf(o.dataset.option) >= 0);
+    });
+    var form = art.querySelector('form.selected');
+    if (form) {
+      form.querySelectorAll('input[name=selected]').forEach(function (i) { i.remove(); });
+      set.forEach(function (v) {
+        var i = document.createElement('input'); i.type = 'hidden'; i.name = 'selected'; i.value = v; form.appendChild(i);
+      });
+      var btn = form.querySelector('button');
+      var min = +art.dataset.min || 1;
+      if (btn) btn.disabled = set.length < min;
+    }
+  }
+
+  function restore() {
+    document.querySelectorAll('article[data-id]').forEach(function (art) {
+      applyPicks(art);
+      var ta = art.querySelector('textarea[name=note]');
+      if (ta && notes[art.dataset.id] != null) ta.value = notes[art.dataset.id];
+    });
+    var p = document.querySelectorAll('#pending article').length, a = document.querySelectorAll('#answered article').length;
+    document.getElementById('counts').textContent = p + ' waiting · ' + a + ' answered';
+  }
+  document.body.addEventListener('htmx:sseMessage', function () { setTimeout(restore, 0); });
   document.body.addEventListener('htmx:sseOpen', function () { document.body.classList.remove('offline'); });
   document.body.addEventListener('htmx:sseError', function () { document.body.classList.add('offline'); });
+  restore();
+
+  // Lightbox: full-screen image with actual-pixels toggle and sibling nav.
+  var lb = document.getElementById('lb'), img = document.getElementById('lb-img'), siblings = [], at = 0, actual = false;
+  function openLightbox(z) {
+    var art = z.closest('article');
+    siblings = Array.prototype.slice.call(art.querySelectorAll('.zoom'));
+    at = siblings.indexOf(z);
+    show();
+  }
+  function show() {
+    var z = siblings[at];
+    actual = false;
+    img.src = z.href; img.classList.remove('actual');
+    document.getElementById('lb-name').textContent = z.dataset.name || '';
+    document.getElementById('lb-meta').textContent = (z.dataset.meta || '') + ' · fit';
+    lb.hidden = false;
+  }
+  function close() { lb.hidden = true; img.src = ''; }
+  lb.addEventListener('click', function (e) { if (e.target === lb || e.target === img) close(); });
+  document.addEventListener('keydown', function (e) {
+    if (lb.hidden) return;
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowRight' && at < siblings.length - 1) { at++; show(); }
+    else if (e.key === 'ArrowLeft' && at > 0) { at--; show(); }
+    else if (e.key === '1') {
+      actual = !actual; img.classList.toggle('actual', actual);
+      document.getElementById('lb-meta').textContent = (siblings[at].dataset.meta || '') + (actual ? ' · 1:1' : ' · fit');
+    }
+  });
+})();
 </script>
 </body>
 </html>{{end}}
 
-{{define "tree"}}{{$files := .Files}}<div class="stats">{{$files}} {{if eq $files 1}}file{{else}}files{{end}} · {{.Bytes | size}}</div>
-{{if .Node.Children}}{{template "children" .Node.Children}}{{else}}<div class="empty">Empty.</div>{{end}}{{end}}
+{{define "queue"}}<section id="pending">
+<h1>Waiting for you</h1>
+{{if not .Pending}}<p class="empty">Nothing to decide.{{if .Upstreams}} Upstreams:{{range .Upstreams}} {{.Name}}{{end}}.{{end}}</p>{{end}}
+{{range .Pending}}{{template "card" .}}{{end}}
+</section>
+<section id="answered">
+{{if .Answered}}<h1>Answered</h1>{{end}}
+{{range .Answered}}{{template "card" .}}{{end}}
+</section>{{end}}
 
-{{define "children"}}<ul>
-{{range .}}<li class="{{if .Dir}}dir{{else}}file{{end}}">{{if .Dir}}<span>{{.Name}}</span>{{template "children" .Children}}{{else}}<span data-path="{{.Path}}" hx-get="/preview/{{.Path | pathEscape}}" hx-target="#preview">{{.Name}}</span>{{end}}</li>
-{{end}}</ul>{{end}}
+{{define "card"}}<article data-id="{{.ID}}" data-min="{{.Min}}" data-max="{{.Max}}" class="{{if .Answer}}answered{{end}}">
+  <div class="head">
+    <h2>{{.Title}}</h2>
+    {{if .Supersedes}}<span class="muted">revises {{.Supersedes}}</span>{{end}}
+    <span class="type">{{.Type}}</span>
+    <span class="muted">{{.ID}}</span>
+  </div>
+  {{if .Answer}}
+  <div class="answer"><b>{{verdict .Answer.Verdict}}</b>{{if .Answer.Selected}} · {{range $i, $s := .Answer.Selected}}{{if $i}}, {{end}}{{$s}}{{end}}{{end}}{{if .Answer.Note}} · “{{.Answer.Note}}”{{end}} · {{.Answer.At.Format "15:04:05"}}</div>
+  {{else}}
+  <div class="body">
+    {{if .Prompt}}<p class="prompt">{{.Prompt}}</p>{{end}}
+    {{if .Attachments}}<div class="label">Reference</div>
+    <div class="grid refs">{{range .Attachments}}{{template "media" (media $ .File .Name .Meta)}}{{end}}</div>{{end}}
+    {{if eq .Type "choose"}}
+      <div class="label">Options{{if gt .Max 1}} · pick {{.Min}}{{if ne .Min .Max}} to {{.Max}}{{end}}{{end}}</div>
+      <div class="grid">{{range .Options}}<div class="opt" data-option="{{.ID}}">{{template "media" (media $ .File .Label .Meta)}}<div class="cap"><span>{{if .Label}}{{.Label}}{{else}}{{.ID}}{{end}}</span></div></div>{{end}}</div>
+      <textarea name="note" rows="2" placeholder="Note (optional)"></textarea>
+      <div class="actions">
+        <form class="selected" hx-post="/decisions/{{.ID}}/answer" hx-include="closest article" hx-swap="none"><input type="hidden" name="verdict" value="selected"><button class="primary" disabled>Use selected</button></form>
+        {{if .None}}<form hx-post="/decisions/{{.ID}}/answer" hx-include="closest article" hx-swap="none"><input type="hidden" name="verdict" value="none"><button class="warn">None of these</button></form>{{end}}
+        <span class="hint">click an image to open it</span>
+      </div>
+    {{else if eq .Type "approve"}}
+      {{range .Options}}<div class="single">{{template "media" (media $ .File .Label .Meta)}}{{if .Label}}<div class="cap">{{.Label}}</div>{{end}}</div>{{end}}
+      <textarea name="note" rows="2" placeholder="Note (optional)"></textarea>
+      <div class="actions">
+        {{template "verdictbtn" (btn $ "accept" "Use it" "primary")}}
+        {{template "verdictbtn" (btn $ "changes" "Changes" "warn")}}
+        {{template "verdictbtn" (btn $ "reject" "No" "bad")}}
+      </div>
+    {{else if eq .Type "compare"}}
+      <div class="grid pair">{{range .Options}}<div class="single"><div class="label">{{.ID}}</div>{{template "media" (media $ .File .Label .Meta)}}{{if .Label}}<div class="cap">{{.Label}}</div>{{end}}</div>{{end}}</div>
+      <textarea name="note" rows="2" placeholder="Note (optional)"></textarea>
+      <div class="actions">
+        {{template "verdictbtn" (btn $ "new" "Use new" "primary")}}
+        {{template "verdictbtn" (btn $ "current" "Keep current" "")}}
+        {{template "verdictbtn" (btn $ "changes" "Changes" "warn")}}
+      </div>
+    {{else if eq .Type "confirm"}}
+      <textarea name="note" rows="2" placeholder="Note (optional)"></textarea>
+      <div class="actions">
+        {{template "verdictbtn" (btn $ "yes" "Yes" "primary")}}
+        {{template "verdictbtn" (btn $ "no" "No" "bad")}}
+      </div>
+    {{else if eq .Type "ask"}}
+      <textarea name="note" rows="3" placeholder="Your answer"></textarea>
+      <div class="actions">
+        {{template "verdictbtn" (btn $ "answered" "Send" "primary")}}
+      </div>
+    {{end}}
+  </div>
+  {{end}}
+</article>{{end}}
 
-{{define "preview"}}<h2>{{.Path}}</h2>
-<div class="meta">{{.Type}} · {{.Size | size}} · modified {{.ModTime.Format "15:04:05"}}</div>
-{{if eq .Kind "image"}}<img src="{{.URL}}" alt="{{.Path}}">
-{{else if eq .Kind "audio"}}<audio controls src="{{.URL}}"></audio>
-{{else if eq .Kind "video"}}<video controls src="{{.URL}}"></video>
-{{else if eq .Kind "text"}}<pre>{{.Text}}</pre>{{if .Truncated}}<p class="empty">Truncated; <a href="{{.URL}}">open the full file</a>.</p>{{end}}
-{{else}}<p class="empty">No preview. <a href="{{.URL}}">Download</a>.</p>
-{{end}}{{end}}
+{{define "verdictbtn"}}<form hx-post="/decisions/{{.D.ID}}/answer" hx-include="closest article" hx-swap="none"><input type="hidden" name="verdict" value="{{.Verdict}}"><button class="{{.Class}}">{{.Label}}</button></form>{{end}}
+
+{{define "media"}}{{$url := printf "/decisions/%s/files/%s" .D.ID .File}}{{$k := filekind .Meta}}
+{{if eq $k "image"}}<a class="zoom" href="{{$url}}" data-name="{{.Name}}" data-meta="{{.Meta.Width}}×{{.Meta.Height}} · {{size .Meta.Size}}"><img src="{{$url}}" alt="{{.Name}}"></a>
+{{else if eq $k "audio"}}<audio controls preload="metadata" src="{{$url}}"></audio>
+{{else if eq $k "video"}}<video controls preload="metadata" src="{{$url}}"></video>
+{{else if eq $k "text"}}<pre>{{text .D .File}}</pre>
+{{else if .File}}<a class="dl" href="{{$url}}">{{.File}}</a>
+{{end}}
+{{if .Meta}}<div class="meta">{{.File}} · {{if .Meta.Width}}{{.Meta.Width}}×{{.Meta.Height}} · {{aspect .Meta}} · {{end}}{{size .Meta.Size}}</div>{{end}}{{end}}
