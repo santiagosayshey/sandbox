@@ -1,13 +1,16 @@
 # sandbox
 
-An ephemeral scratch space for agent-driven homelab work. A small Go
-service holds files in a RAM disk, shows them live in a browser as they
-arrive, and proxies requests to services like TMDb and Plex with the
-credentials injected server-side. A reset or restart empties it.
+An ephemeral scratch space for agent sessions. A small Go service holds
+files in a RAM disk, shows them live in a browser as they arrive, and
+proxies requests to upstream APIs with credentials injected server-side
+and an allow list deciding which requests may pass. A reset or restart
+empties it.
 
-It exists so an agent can build Kometa assets and metadata, a person can
-eyeball them at `http://localhost:8080`, and the approved files get copied
-into the [orion](http://forgejo.orion/santiagosayshey/orion) repository.
+It runs on the machine the agent works from, bound to localhost. The
+agent uploads what it produced, a person checks it at
+`http://localhost:8080`, and the approved files go wherever they belong.
+The agent never holds an API key and can only make the requests the
+configuration names.
 
 The usage contract for agents is [`llms.txt`](llms.txt), embedded in the
 image and served at `/llms.txt`. Everything is plain HTTP; curl is the
@@ -41,6 +44,19 @@ Run it locally:
 
 The image is `gcr.io/distroless/static:nonroot`; mount `/data` as a tmpfs
 owned by uid 65532 and run with a read-only root filesystem.
+
+## Use cases
+
+**Kometa assets and metadata.** The agent looks a title up through
+`/tmdb`, downloads artwork, uploads posters, theme audio and metadata
+YAML under the layout the target repository uses, and the person checks
+them in the browser before they are committed. `/plex` lets it confirm
+what the library already holds. This is what `compose.example.yml` is
+configured for.
+
+**Any API with a key.** Register the upstream, inject the credential,
+allow the read paths, and the agent can query it without the key
+appearing in its context or the transcript.
 
 ## Development
 
