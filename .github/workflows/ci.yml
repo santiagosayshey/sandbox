@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: go generate
+        run: go generate ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+      - name: go test
+        run: go test -race ./...
+      - name: govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+      - name: docker build
+        run: docker build --build-arg VERSION=ci .
+
+  # Every push to develop publishes a :develop image for trying a change on
+  # the host before a release. Production pins release tags.
+  develop-image:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          build-args: VERSION=develop-${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository }}:develop
+            ghcr.io/${{ github.repository }}:sha-${{ github.sha }}

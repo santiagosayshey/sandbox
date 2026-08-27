@@ -1,0 +1,52 @@
+# On a v* tag: build and push the image to GHCR, scan it, and publish a
+# GitHub release with the changelog section git-cliff generates for the tag.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          build-args: VERSION=${{ github.ref_name }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest
+
+      - uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE.md
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          body_path: RELEASE.md

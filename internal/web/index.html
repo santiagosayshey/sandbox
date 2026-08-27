@@ -1,0 +1,73 @@
+{{define "page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sandbox</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/htmx.min.js"></script>
+<script src="/static/sse.js"></script>
+</head>
+<body hx-ext="sse" sse-connect="/events">
+<header>
+  <b>sandbox</b>
+  <span class="muted">{{.Dir}}</span>
+  <button hx-post="/reset" hx-confirm="Delete everything in the sandbox?" hx-swap="none">reset</button>
+  <span class="status">live · {{.Host}} · {{.Version}}</span>
+</header>
+<main>
+  <nav id="tree" sse-swap="tree" hx-swap="innerHTML">{{template "tree" .Tree}}</nav>
+  <section id="preview"><p class="empty">Select a file.</p></section>
+</main>
+<script>
+  // Keep the selected file highlighted across tree swaps and refresh its
+  // preview when the tree changes, since the file itself may have changed.
+  var selected = null;
+  function mark() {
+    document.querySelectorAll('#tree span.sel').forEach(function (el) { el.classList.remove('sel'); });
+    if (!selected) return;
+    var el = document.querySelector('#tree span[data-path="' + CSS.escape(selected) + '"]');
+    if (el) el.classList.add('sel');
+  }
+  document.body.addEventListener('click', function (e) {
+    var el = e.target.closest('#tree span[data-path]');
+    if (!el) return;
+    selected = el.dataset.path;
+    mark();
+  });
+  document.body.addEventListener('htmx:sseMessage', function (e) {
+    if (e.detail.type !== 'tree') return;
+    document.body.classList.remove('offline');
+    setTimeout(function () {
+      mark();
+      if (selected) {
+        if (document.querySelector('#tree span[data-path="' + CSS.escape(selected) + '"]')) {
+          htmx.ajax('GET', '/preview/' + selected.split('/').map(encodeURIComponent).join('/'), '#preview');
+        } else {
+          selected = null;
+          document.getElementById('preview').innerHTML = '<p class="empty">Select a file.</p>';
+        }
+      }
+    }, 0);
+  });
+  document.body.addEventListener('htmx:sseOpen', function () { document.body.classList.remove('offline'); });
+  document.body.addEventListener('htmx:sseError', function () { document.body.classList.add('offline'); });
+</script>
+</body>
+</html>{{end}}
+
+{{define "tree"}}{{$files := .Files}}<div class="stats">{{$files}} {{if eq $files 1}}file{{else}}files{{end}} · {{.Bytes | size}}</div>
+{{if .Node.Children}}{{template "children" .Node.Children}}{{else}}<div class="empty">Empty.</div>{{end}}{{end}}
+
+{{define "children"}}<ul>
+{{range .}}<li class="{{if .Dir}}dir{{else}}file{{end}}">{{if .Dir}}<span>{{.Name}}</span>{{template "children" .Children}}{{else}}<span data-path="{{.Path}}" hx-get="/preview/{{.Path | pathEscape}}" hx-target="#preview">{{.Name}}</span>{{end}}</li>
+{{end}}</ul>{{end}}
+
+{{define "preview"}}<h2>{{.Path}}</h2>
+<div class="meta">{{.Type}} · {{.Size | size}} · modified {{.ModTime.Format "15:04:05"}}</div>
+{{if eq .Kind "image"}}<img src="{{.URL}}" alt="{{.Path}}">
+{{else if eq .Kind "audio"}}<audio controls src="{{.URL}}"></audio>
+{{else if eq .Kind "video"}}<video controls src="{{.URL}}"></video>
+{{else if eq .Kind "text"}}<pre>{{.Text}}</pre>{{if .Truncated}}<p class="empty">Truncated; <a href="{{.URL}}">open the full file</a>.</p>{{end}}
+{{else}}<p class="empty">No preview. <a href="{{.URL}}">Download</a>.</p>
+{{end}}{{end}}

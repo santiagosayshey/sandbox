@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":disableDependencyDashboard"],
+  "timezone": "Australia/Adelaide",
+  "schedule": ["before 6am on monday"],
+  "minimumReleaseAge": "7 days",
+  "automerge": false,
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the htmx assets pinned in tools/fetchassets",
+      "managerFilePatterns": ["/^tools/fetchassets/main\\.go$/"],
+      "matchStrings": ["// renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\nconst \\w+ = \"(?<currentValue>[^\"]+)\""]
+    },
+    {
+      "customType": "regex",
+      "description": "Track the staticcheck version run in CI",
+      "managerFilePatterns": ["/^\\.github/workflows/ci\\.yml$/"],
+      "matchStrings": ["go run honnef\\.co/go/tools/cmd/staticcheck@(?<currentValue>\\S+)"],
+      "depNameTemplate": "honnef.co/go/tools",
+      "datasourceTemplate": "go"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Group routine updates",
+      "matchUpdateTypes": ["minor", "patch", "pin", "pinDigest", "digest"],
+      "groupName": "all non-major dependencies",
+      "groupSlug": "all-non-major"
+    }
+  ]
+}

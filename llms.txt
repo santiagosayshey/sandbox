@@ -1,0 +1,105 @@
+# sandbox
+
+An ephemeral scratch space on the homelab host. Files you upload appear
+instantly in a browser page at {{PUBLIC_URL}} so a person can check them,
+and GET requests to configured upstreams ({{UPSTREAMS}}) are forwarded with
+the right credentials injected, so you never need or see an API key.
+
+Nothing here persists. /data is a RAM disk: a reset or a container restart
+empties it. Copy anything worth keeping into the repository.
+
+## Auth
+
+Writes and upstream calls need a bearer token. It is SANDBOX_TOKEN in
+tools/sandbox/.env in the repository checkout:
+
+    export SANDBOX_TOKEN=$(grep ^SANDBOX_TOKEN= tools/sandbox/.env | cut -d= -f2-)
+    AUTH="Authorization: Bearer $SANDBOX_TOKEN"
+
+Reads, the page and this file need no token.
+
+## Session
+
+    curl -s {{PUBLIC_URL}}/llms.txt          # this text
+    curl -s -X POST -H "$AUTH" {{PUBLIC_URL}}/reset   # start clean
+    ...work...
+    curl -s -X POST -H "$AUTH" {{PUBLIC_URL}}/reset   # leave nothing behind
+
+Reset when the task is finished.
+
+## Files
+
+Paths are relative to /data. Directories are created as needed and exist
+only while a file is in them. Use the layout the files will have in the
+repository so they can be copied across unchanged. Percent-encode spaces
+and parentheses in URLs; the path on disk is the decoded form.
+
+    # upload (201 created, 204 replaced)
+    curl -s -X PUT -H "$AUTH" --data-binary @poster.jpg \
+      "{{PUBLIC_URL}}/files/assets/The%20Good%2C%20the%20Bad%20and%20the%20Ugly%20%281966%29/poster.jpg"
+
+    # list, as text
+    curl -s -H 'Accept: text/plain' {{PUBLIC_URL}}/tree
+
+    # download
+    curl -s -o out.jpg "{{PUBLIC_URL}}/files/assets/x/poster.jpg"
+
+    # delete a file or a directory (recursive)
+    curl -s -X DELETE -H "$AUTH" "{{PUBLIC_URL}}/files/assets/x"
+
+    # delete everything
+    curl -s -X POST -H "$AUTH" {{PUBLIC_URL}}/reset
+
+Uploads are capped per file (default 50 MB) and the RAM disk has a fixed
+size; a full disk fails the upload rather than the host.
+
+The page at {{PUBLIC_URL}} previews images, audio, video and text (YAML,
+JSON, Markdown, plain text) and updates live. Other types show a download
+link. Tell the person which path to look at.
+
+## Upstreams
+
+Each upstream allows only the requests listed for it; anything else is
+403 with the allowed list in the body. Check before guessing:
+
+    curl -s {{PUBLIC_URL}}/upstreams      # {"tmdb": ["GET /3/movie/*", ...], ...}
+
+    curl -s -H "$AUTH" "{{PUBLIC_URL}}/tmdb/3/movie/429"
+    curl -s -H "$AUTH" "{{PUBLIC_URL}}/tmdb/3/search/movie?query=A%20Fistful%20of%20Dollars&year=1964"
+    curl -s -H "$AUTH" "{{PUBLIC_URL}}/tmdb/3/movie/429/images?include_image_language=en,null"
+    curl -s -H "$AUTH" -H 'Accept: application/json' "{{PUBLIC_URL}}/plex/library/sections"
+    curl -s -H "$AUTH" -H 'Accept: application/json' "{{PUBLIC_URL}}/plex/library/metadata/12345"
+
+The path after /<upstream>/ is the upstream's own path and query, exactly
+as its API documents them. Do not add an API key, token or Authorization
+for the upstream; the server injects the credential and strips the sandbox
+bearer before forwarding. Plex answers XML unless asked for JSON.
+
+TMDb image files live on https://image.tmdb.org/t/p/original<file_path>
+and need no key; fetch them directly and upload the result.
+
+## Typical Kometa flow
+
+1. Reset.
+2. Look the title up: /tmdb/3/search/movie?query=..., then
+   /tmdb/3/movie/<id>/images for artwork candidates.
+3. Download the artwork and upload it under
+   assets/<Name (Year)>/poster.jpg (or background.jpg, theme.mp3),
+   matching the layout in apps/kometa/config/assets.
+4. Upload the metadata YAML alongside, e.g. metadata/movies.yml.
+5. Ask the person to check {{PUBLIC_URL}}.
+6. Copy the approved files into the repository checkout, then reset.
+
+## Routes
+
+    GET    /                    page
+    GET    /tree                HTML fragment, or text with Accept: text/plain
+    GET    /preview/<path>      HTML fragment
+    GET    /events              SSE, event "tree"
+    GET    /files/<path>        raw file
+    PUT    /files/<path>        upload (bearer)
+    DELETE /files/<path>        delete (bearer)
+    POST   /reset               empty /data (bearer)
+    GET    /<upstream>/<path>   proxied GET (bearer)
+    GET    /upstreams           JSON list of names
+    GET    /llms.txt  /healthz  /version

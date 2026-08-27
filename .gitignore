@@ -1,0 +1,5 @@
+/sandboxd
+/dist/
+# fetched by `go generate ./...`, see tools/fetchassets
+/internal/web/htmx.min.js
+/internal/web/sse.js
