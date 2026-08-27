@@ -1,0 +1,32 @@
+# Copy to compose.yml next to a filled-in .env (see .env.example), then
+# `docker compose up -d`. The page is at http://localhost:8080 and the
+# agent contract at http://localhost:8080/llms.txt. `docker compose down`
+# removes the container and everything in /data.
+services:
+  sandbox:
+    image: ghcr.io/santiagosayshey/sandbox:develop
+    container_name: sandbox
+    read_only: true
+    tmpfs:
+      # RAM disk; uid 65532 is the distroless nonroot user the server runs as.
+      - /data:size=512m,uid=65532,gid=65532
+    ports:
+      # Localhost only: the sandbox has a single shared token and no users.
+      - "127.0.0.1:8080:8080"
+    environment:
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN}
+      SANDBOX_PUBLIC_URL: http://localhost:8080
+      # Each upstream: where it is, the credential to inject, and the
+      # requests allowed through. Anything not listed is refused with 403.
+      SANDBOX_UPSTREAM_TMDB: https://api.themoviedb.org
+      SANDBOX_QUERY_TMDB: api_key=${TMDB_APIKEY}
+      SANDBOX_ALLOW_TMDB: |
+        GET /3/configuration
+        GET /3/search/*
+        GET /3/movie/*
+        GET /3/tv/*
+      SANDBOX_UPSTREAM_PLEX: ${PLEX_URL}
+      SANDBOX_HEADER_PLEX: "X-Plex-Token: ${PLEX_TOKEN}"
+      SANDBOX_ALLOW_PLEX: |
+        GET /identity
+        GET /library/*

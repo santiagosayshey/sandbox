@@ -28,18 +28,12 @@ client.
 | `SANDBOX_ALLOW_<NAME>` | unset | `METHOD /path` lines; only matching requests are forwarded, the rest get 403. No rules means nothing is allowed |
 
 A path ending in `/*` matches itself and everything beneath it; any other
-path must match exactly. `*` as the method allows any method. Example:
+path must match exactly. `*` as the method allows any method.
 
-    SANDBOX_UPSTREAM_TMDB: https://api.themoviedb.org
-    SANDBOX_QUERY_TMDB: api_key=<v3 key>
-    SANDBOX_ALLOW_TMDB: |
-      GET /3/search/*
-      GET /3/movie/*
-    SANDBOX_UPSTREAM_PLEX: http://plex:32400
-    SANDBOX_HEADER_PLEX: "X-Plex-Token: <token>"
-    SANDBOX_ALLOW_PLEX: |
-      GET /identity
-      GET /library/*
+[`compose.example.yml`](compose.example.yml) and
+[`.env.example`](.env.example) are a complete configuration with TMDb and
+Plex upstreams. Copy them to `compose.yml` and `.env`, fill in the values,
+and `docker compose up -d`.
 
 Run it locally:
 

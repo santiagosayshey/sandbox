@@ -3,3 +3,6 @@
 # fetched by `go generate ./...`, see tools/fetchassets
 /internal/web/htmx.min.js
 /internal/web/sse.js
+# local copies of the examples
+/compose.yml
+/.env
