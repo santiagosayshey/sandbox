@@ -11,10 +11,9 @@ services:
       # RAM disk; uid 65532 is the distroless nonroot user the server runs as.
       - /data:size=512m,uid=65532,gid=65532
     ports:
-      # Localhost only: the sandbox has a single shared token and no users.
+      # Localhost only: the sandbox has no authentication.
       - "127.0.0.1:8080:8080"
     environment:
-      SANDBOX_TOKEN: ${SANDBOX_TOKEN}
       SANDBOX_PUBLIC_URL: http://localhost:8080
       # Each upstream: where it is, the credential to inject, and the
       # requests allowed through. Anything not listed is refused with 403.

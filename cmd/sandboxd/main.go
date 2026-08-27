@@ -25,10 +25,6 @@ func main() {
 	log.SetFlags(0)
 	addr := envOr("SANDBOX_ADDR", ":8080")
 	dir := envOr("SANDBOX_DATA", "/data")
-	token := os.Getenv("SANDBOX_TOKEN")
-	if token == "" {
-		log.Fatal("SANDBOX_TOKEN is required")
-	}
 	maxUpload, err := strconv.ParseInt(envOr("SANDBOX_MAX_UPLOAD", "52428800"), 10, 64)
 	if err != nil || maxUpload <= 0 {
 		log.Fatalf("SANDBOX_MAX_UPLOAD: not a positive integer")
@@ -50,7 +46,6 @@ func main() {
 	defer w.Close()
 
 	h, err := server.New(st, w, server.Config{
-		Token:     token,
 		MaxUpload: maxUpload,
 		PublicURL: os.Getenv("SANDBOX_PUBLIC_URL"),
 		Version:   version,
