@@ -36,7 +36,7 @@ and parentheses in URLs; the path on disk is the decoded form.
 
     # upload (201 created, 204 replaced)
     curl -s -X PUT -H "$AUTH" --data-binary @poster.jpg \
-      "{{PUBLIC_URL}}/files/assets/The%20Good%2C%20the%20Bad%20and%20the%20Ugly%20%281966%29/poster.jpg"
+      "{{PUBLIC_URL}}/files/assets/movies/429/poster.jpg"
 
     # list, as text
     curl -s -H 'Accept: text/plain' {{PUBLIC_URL}}/tree
@@ -83,9 +83,10 @@ and need no key; fetch them directly and upload the result.
 1. Reset.
 2. Look the title up: /tmdb/3/search/movie?query=..., then
    /tmdb/3/movie/<id>/images for artwork candidates.
-3. Download the artwork and upload it under
-   assets/<Name (Year)>/poster.jpg (or background.jpg, theme.mp3),
-   matching the layout in apps/kometa/config/assets.
+3. Download the artwork and upload it under the exact path it will have
+   in the repository's Kometa config, e.g. assets/movies/<tmdb id>/poster.jpg
+   (or background.jpg, theme.mp3). Check the repository's own
+   documentation for its asset layout and size limits before uploading.
 4. Upload the metadata YAML alongside, e.g. metadata/movies.yml.
 5. Ask the person to check {{PUBLIC_URL}}.
 6. Copy the approved files into the repository checkout, then reset.
