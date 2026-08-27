@@ -19,7 +19,6 @@ client.
 | --- | --- | --- |
 | `SANDBOX_ADDR` | `:8080` | listen address |
 | `SANDBOX_DATA` | `/data` | directory to serve; a tmpfs in production |
-| `SANDBOX_TOKEN` | required | bearer for writes and upstream routes |
 | `SANDBOX_MAX_UPLOAD` | `52428800` | per-file byte limit |
 | `SANDBOX_PUBLIC_URL` | unset | URL shown to people and in `llms.txt` |
 | `SANDBOX_UPSTREAM_<NAME>` | unset | registers `/<name>/*` forwarding to this URL |
@@ -37,8 +36,8 @@ and `docker compose up -d`.
 
 Run it locally:
 
-    SANDBOX_TOKEN=dev SANDBOX_DATA=/tmp/sandbox go run ./cmd/sandboxd
-    curl -X PUT -H 'Authorization: Bearer dev' --data-binary @README.md localhost:8080/files/docs/README.md
+    SANDBOX_DATA=/tmp/sandbox go run ./cmd/sandboxd
+    curl -X PUT --data-binary @README.md localhost:8080/files/docs/README.md
 
 The image is `gcr.io/distroless/static:nonroot`; mount `/data` as a tmpfs
 owned by uid 65532 and run with a read-only root filesystem.

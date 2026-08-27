@@ -4,7 +4,6 @@ package server
 
 import (
 	"bytes"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,7 +27,6 @@ import (
 
 // Config is everything the handler needs beyond the store and watcher.
 type Config struct {
-	Token     string
 	MaxUpload int64
 	PublicURL string
 	Version   string
@@ -73,8 +71,8 @@ func New(st *store.Store, w *watch.Watcher, cfg Config) (http.Handler, error) {
 	mux.HandleFunc("GET /preview/{path...}", s.preview)
 	mux.HandleFunc("GET /events", s.events)
 	mux.HandleFunc("GET /files/{path...}", s.getFile)
-	mux.Handle("PUT /files/{path...}", s.auth(http.HandlerFunc(s.putFile)))
-	mux.Handle("DELETE /files/{path...}", s.auth(http.HandlerFunc(s.deleteFile)))
+	mux.HandleFunc("PUT /files/{path...}", s.putFile)
+	mux.HandleFunc("DELETE /files/{path...}", s.deleteFile)
 	mux.HandleFunc("POST /reset", s.reset)
 	mux.HandleFunc("GET /llms.txt", s.llms)
 	mux.HandleFunc("GET /upstreams", s.upstreams)
@@ -83,23 +81,11 @@ func New(st *store.Store, w *watch.Watcher, cfg Config) (http.Handler, error) {
 	static, _ := fs.Sub(web.Assets, ".")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 	for _, u := range cfg.Upstreams {
-		h := s.auth(http.StripPrefix("/"+u.Name, u.Handler()))
+		h := http.StripPrefix("/"+u.Name, u.Handler())
 		mux.Handle("/"+u.Name+"/", h)
 		mux.Handle("/"+u.Name, h)
 	}
 	return mux, nil
-}
-
-func (s *server) auth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if s.cfg.Token == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="sandbox"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // treeData is what the tree fragment renders.

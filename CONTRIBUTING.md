@@ -18,7 +18,7 @@ Types: `feat`, `fix`, `chore`, `docs`, `ci`, `refactor`, `test`.
 Scopes: `server`, `web`, `proxy`, `store`, `deps`, or none.
 
     feat(server): add video previews
-    fix(proxy): drop the sandbox bearer before forwarding
+    fix(proxy): drop client Authorization headers before forwarding
     chore(deps): update all non-major dependencies
 
 ## Releases

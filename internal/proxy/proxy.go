@@ -189,8 +189,8 @@ func (u Upstream) reverseProxy() *httputil.ReverseProxy {
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(u.URL)
 			r.Out.Host = u.URL.Host
-			// The client's bearer authenticates it to the sandbox, not to
-			// the upstream; never forward it.
+			// Never forward a client-supplied credential; the upstream's
+			// comes from the configuration below.
 			r.Out.Header.Del("Authorization")
 			for k, vs := range u.Header {
 				r.Out.Header.Del(k)
