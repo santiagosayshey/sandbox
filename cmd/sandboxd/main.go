@@ -1,5 +1,5 @@
-// Command sandboxd serves the sandbox: an ephemeral file drop with a live
-// page and credential-injecting proxies.
+// Command sandboxd serves the sandbox: decisions an agent asks a person to
+// make, and credential-injecting proxies to upstream APIs.
 package main
 
 import (
@@ -13,10 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/santiagosayshey/sandbox/internal/decision"
 	"github.com/santiagosayshey/sandbox/internal/proxy"
 	"github.com/santiagosayshey/sandbox/internal/server"
-	"github.com/santiagosayshey/sandbox/internal/store"
-	"github.com/santiagosayshey/sandbox/internal/watch"
 )
 
 var version = "dev"
@@ -34,18 +33,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	st, err := store.Open(dir)
+	st, err := decision.Open(dir)
 	if err != nil {
 		log.Fatalf("open %s: %v", dir, err)
 	}
 	defer st.Close()
-	w, err := watch.New(dir, 100*time.Millisecond)
-	if err != nil {
-		log.Fatalf("watch %s: %v", dir, err)
-	}
-	defer w.Close()
 
-	h, err := server.New(st, w, server.Config{
+	h, err := server.New(st, server.Config{
 		MaxUpload: maxUpload,
 		PublicURL: os.Getenv("SANDBOX_PUBLIC_URL"),
 		Version:   version,

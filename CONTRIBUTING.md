@@ -15,7 +15,7 @@
 Conventional Commits: `<type>(<scope>): <description>`.
 
 Types: `feat`, `fix`, `chore`, `docs`, `ci`, `refactor`, `test`.
-Scopes: `server`, `web`, `proxy`, `store`, `deps`, or none.
+Scopes: `server`, `web`, `proxy`, `decision`, `deps`, or none.
 
     feat(server): add video previews
     fix(proxy): drop client Authorization headers before forwarding

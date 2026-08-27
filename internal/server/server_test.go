@@ -1,57 +1,67 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
+	"image"
+	"image/png"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/santiagosayshey/sandbox/internal/decision"
 	"github.com/santiagosayshey/sandbox/internal/proxy"
-	"github.com/santiagosayshey/sandbox/internal/store"
-	"github.com/santiagosayshey/sandbox/internal/watch"
 )
 
-func newServer(t *testing.T, upstreams ...proxy.Upstream) (*httptest.Server, string) {
+func newServer(t *testing.T, upstreams ...proxy.Upstream) *httptest.Server {
 	t.Helper()
-	dir := t.TempDir()
-	st, err := store.Open(dir)
+	st, err := decision.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	w, err := watch.New(dir, 10*time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { w.Close() })
-	h, err := New(st, w, Config{MaxUpload: 1024, Version: "test", Upstreams: upstreams})
+	h, err := New(st, Config{MaxUpload: 1 << 20, Version: "test", Upstreams: upstreams})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return srv, dir
+	return srv
 }
 
-func do(t *testing.T, method, u string, body string) *http.Response {
+func pngBytes(w, h int) []byte {
+	var b bytes.Buffer
+	_ = png.Encode(&b, image.NewRGBA(image.Rect(0, 0, w, h)))
+	return b.Bytes()
+}
+
+// post sends a multipart decision: spec JSON plus named files.
+func post(t *testing.T, srv *httptest.Server, spec string, files map[string][]byte) (*http.Response, decision.Decision) {
 	t.Helper()
-	req, err := http.NewRequest(method, u, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("spec", spec)
+	for name, b := range files {
+		fw, _ := mw.CreateFormFile("file", name)
+		fw.Write(b)
 	}
-	// A stray client credential must never reach an upstream.
-	req.Header.Set("Authorization", "Bearer stray")
-	resp, err := http.DefaultClient.Do(req)
+	mw.Close()
+	resp, err := http.Post(srv.URL+"/decisions", mw.FormDataContentType(), &body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { resp.Body.Close() })
-	return resp
+	var d decision.Decision
+	if resp.StatusCode == http.StatusCreated {
+		_ = json.NewDecoder(resp.Body).Decode(&d)
+	}
+	return resp, d
 }
 
 func readAll(t *testing.T, r io.Reader) string {
@@ -63,144 +73,162 @@ func readAll(t *testing.T, r io.Reader) string {
 	return string(b)
 }
 
-func TestPutCreatesParentsAndReplaces(t *testing.T) {
-	srv, dir := newServer(t)
-	u := srv.URL + "/files/assets/A%20Film%20(1966)/poster.jpg"
-	if resp := do(t, http.MethodPut, u, "one"); resp.StatusCode != http.StatusCreated {
-		t.Fatalf("first put: %d", resp.StatusCode)
+func TestCreateAndRenderChoose(t *testing.T) {
+	srv := newServer(t)
+	resp, d := post(t, srv, `{"title":"Poster","prompt":"pick","type":"choose",
+		"options":[{"id":"a","label":"A","file":"a.png"},{"id":"b","file":"b.png"}],
+		"attachments":[{"name":"current","file":"cur.png"}]}`,
+		map[string][]byte{"a.png": pngBytes(20, 30), "b.png": pngBytes(16, 9), "cur.png": pngBytes(2, 3)})
+	if resp.StatusCode != http.StatusCreated || d.ID != "d1" {
+		t.Fatalf("create: %d %+v", resp.StatusCode, d)
 	}
-	if resp := do(t, http.MethodPut, u, "two"); resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("second put: %d", resp.StatusCode)
-	}
-	b, err := os.ReadFile(filepath.Join(dir, "assets", "A Film (1966)", "poster.jpg"))
-	if err != nil || string(b) != "two" {
-		t.Fatalf("on disk: %q %v", b, err)
-	}
-	if entries, _ := os.ReadDir(filepath.Join(dir, "assets", "A Film (1966)")); len(entries) != 1 {
-		t.Fatalf("temp file left behind: %v", entries)
-	}
-}
 
-func TestPutRejectsTraversalAndRoot(t *testing.T) {
-	srv, _ := newServer(t)
-	for _, p := range []string{"/files/..%2Fescape", "/files/a/..%2F..%2Fescape", "/files/."} {
-		resp := do(t, http.MethodPut, srv.URL+p, "x")
-		if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
-			t.Errorf("%s: %d", p, resp.StatusCode)
+	page := readAll(t, get(t, srv.URL+"/").Body)
+	for _, want := range []string{`data-id="d1"`, `data-option="a"`, `data-option="b"`, "/decisions/d1/files/a.png", "20×30 · 2:3", "16×9 · 16:9", "Reference", "None of these", "Use selected"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
 		}
 	}
-}
-
-func TestPutTooLarge(t *testing.T) {
-	srv, dir := newServer(t)
-	resp := do(t, http.MethodPut, srv.URL+"/files/big.bin", strings.Repeat("x", 2048))
-	if resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("got %d", resp.StatusCode)
+	f := get(t, srv.URL+"/decisions/d1/files/b.png")
+	if f.StatusCode != http.StatusOK || f.Header.Get("Content-Type") != "image/png" {
+		t.Errorf("file: %d %s", f.StatusCode, f.Header.Get("Content-Type"))
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Fatalf("left behind: %v", entries)
+	if get(t, srv.URL+"/decisions/d1/files/nope.png").StatusCode != http.StatusNotFound {
+		t.Error("missing file should 404")
 	}
-}
-
-func TestGetDeleteAndTree(t *testing.T) {
-	srv, _ := newServer(t)
-	do(t, http.MethodPut, srv.URL+"/files/dir/a.txt", "hello")
-	do(t, http.MethodPut, srv.URL+"/files/dir/sub/b.yml", "k: v")
-
-	resp := do(t, http.MethodGet, srv.URL+"/files/dir/a.txt", "")
-	if resp.StatusCode != http.StatusOK || readAll(t, resp.Body) != "hello" {
-		t.Fatalf("get: %d", resp.StatusCode)
-	}
-	if resp := do(t, http.MethodGet, srv.URL+"/files/dir", ""); resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("get dir: %d", resp.StatusCode)
-	}
-	if resp := do(t, http.MethodGet, srv.URL+"/files/missing", ""); resp.StatusCode != http.StatusNotFound {
-		t.Errorf("get missing: %d", resp.StatusCode)
-	}
-
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/tree", nil)
-	req.Header.Set("Accept", "text/plain")
-	resp, _ = http.DefaultClient.Do(req)
-	plain := readAll(t, resp.Body)
-	if !strings.Contains(plain, "dir/\n  sub/\n    b.yml") || !strings.Contains(plain, "2 files") {
-		t.Errorf("plain tree:\n%s", plain)
-	}
-	resp = do(t, http.MethodGet, srv.URL+"/tree", "")
-	html := readAll(t, resp.Body)
-	if !strings.Contains(html, `data-path="dir/sub/b.yml"`) || !strings.Contains(html, "2 files") {
-		t.Errorf("html tree:\n%s", html)
-	}
-
-	if resp := do(t, http.MethodDelete, srv.URL+"/files/dir/sub", ""); resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("delete dir: %d", resp.StatusCode)
-	}
-	if resp := do(t, http.MethodDelete, srv.URL+"/files/dir/sub", ""); resp.StatusCode != http.StatusNotFound {
-		t.Errorf("delete missing: %d", resp.StatusCode)
-	}
-	if resp := do(t, http.MethodGet, srv.URL+"/files/dir/sub/b.yml", ""); resp.StatusCode != http.StatusNotFound {
-		t.Errorf("after delete: %d", resp.StatusCode)
+	if get(t, srv.URL+"/decisions/d9").StatusCode != http.StatusNotFound {
+		t.Error("missing decision should 404")
 	}
 }
 
-func TestPreviewKinds(t *testing.T) {
-	srv, _ := newServer(t)
-	png := "\x89PNG\r\n\x1a\n" + strings.Repeat("\x00", 16)
-	do(t, http.MethodPut, srv.URL+"/files/p.png", png)
-	do(t, http.MethodPut, srv.URL+"/files/t.mp3", "ID3"+strings.Repeat("\x00", 16))
-	do(t, http.MethodPut, srv.URL+"/files/m.yml", "metadata:\n  x: <y>\n")
-	do(t, http.MethodPut, srv.URL+"/files/o.bin", "\x00\x01\x02\x03")
-
-	cases := map[string]string{
-		"p.png": `<img src="/files/p.png"`,
-		"t.mp3": `<audio controls src="/files/t.mp3"`,
-		"m.yml": `<pre>metadata:
-  x: &lt;y&gt;`,
-		"o.bin": "No preview",
+func get(t *testing.T, u string) *http.Response {
+	t.Helper()
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for name, want := range cases {
-		resp := do(t, http.MethodGet, srv.URL+"/preview/"+name, "")
-		body := readAll(t, resp.Body)
-		if !strings.Contains(body, want) {
-			t.Errorf("%s: want %q in\n%s", name, want, body)
-		}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func TestCreateErrors(t *testing.T) {
+	srv := newServer(t)
+	if resp, _ := post(t, srv, `{"title":"x","type":"choose","options":[{"id":"a","file":"a.png"},{"id":"b","file":"b.png"}]}`, nil); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("missing files: %d", resp.StatusCode)
+	}
+	if resp, _ := post(t, srv, `{"title":"x","type":"vote"}`, nil); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad type: %d", resp.StatusCode)
+	}
+	if resp, _ := post(t, srv, `not json`, nil); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad json: %d", resp.StatusCode)
+	}
+	resp, err := http.Post(srv.URL+"/decisions", "application/json", strings.NewReader(`{"title":"ok?","type":"confirm"}`))
+	if err != nil || resp.StatusCode != http.StatusCreated {
+		t.Errorf("bare json confirm: %v %d", err, resp.StatusCode)
 	}
 }
 
-func TestReset(t *testing.T) {
-	srv, dir := newServer(t)
-	do(t, http.MethodPut, srv.URL+"/files/a/b/c.txt", "x")
-	do(t, http.MethodPut, srv.URL+"/files/d.txt", "x")
-	if resp := do(t, http.MethodPost, srv.URL+"/reset", ""); resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("reset: %d", resp.StatusCode)
+func TestAnswerFormAndJSON(t *testing.T) {
+	srv := newServer(t)
+	post(t, srv, `{"title":"Poster","type":"choose","options":[{"id":"a","file":"a.png"},{"id":"b","file":"b.png"}]}`,
+		map[string][]byte{"a.png": pngBytes(2, 3), "b.png": pngBytes(2, 3)})
+	post(t, srv, `{"title":"ok?","type":"confirm"}`, nil)
+
+	// The page posts a form; selected comes as repeated fields.
+	resp, err := http.PostForm(srv.URL+"/decisions/d1/answer", url.Values{"verdict": {"selected"}, "selected": {"b"}, "note": {"blue"}})
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("form answer: %v %d", err, resp.StatusCode)
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Fatalf("left behind: %v", entries)
+	var a decision.Answer
+	_ = json.NewDecoder(resp.Body).Decode(&a)
+	if a.Verdict != "selected" || a.Selected[0] != "b" || a.Note != "blue" {
+		t.Fatalf("answer: %+v", a)
+	}
+	// Second answer conflicts.
+	resp, _ = http.PostForm(srv.URL+"/decisions/d1/answer", url.Values{"verdict": {"none"}})
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("second answer: %d", resp.StatusCode)
+	}
+	// Agents may answer with JSON too (handy for tests and scripts).
+	resp, _ = http.Post(srv.URL+"/decisions/d2/answer", "application/json", strings.NewReader(`{"verdict":"maybe"}`))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad verdict: %d", resp.StatusCode)
+	}
+	resp, _ = http.Post(srv.URL+"/decisions/d2/answer", "application/json", strings.NewReader(`{"verdict":"yes"}`))
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("json answer: %d", resp.StatusCode)
+	}
+
+	page := readAll(t, get(t, srv.URL+"/").Body)
+	if !strings.Contains(page, "Nothing to decide") || !strings.Contains(page, "<b>chose</b> · b · “blue”") || !strings.Contains(page, "<b>yes</b>") {
+		t.Errorf("answered page:\n%s", page)
+	}
+	list := readAll(t, get(t, srv.URL+"/decisions").Body)
+	if !strings.Contains(list, `"verdict": "yes"`) {
+		t.Errorf("list: %s", list)
 	}
 }
 
-func TestEvents(t *testing.T) {
-	srv, _ := newServer(t)
-	resp := do(t, http.MethodGet, srv.URL+"/events", "")
+func TestAnswersLongPoll(t *testing.T) {
+	srv := newServer(t)
+	post(t, srv, `{"title":"ok?","type":"confirm"}`, nil)
+
+	// No wait: immediate empty list, not null.
+	if body := readAll(t, get(t, srv.URL+"/answers?since=0").Body); strings.TrimSpace(body) != "[]" {
+		t.Fatalf("empty answers: %q", body)
+	}
+
+	start := time.Now()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		http.Post(srv.URL+"/decisions/d1/answer", "application/json", strings.NewReader(`{"verdict":"no","note":"later"}`))
+	}()
+	resp := get(t, srv.URL+"/answers?since=0&wait=5")
+	var got []decision.Answer
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	if len(got) != 1 || got[0].Verdict != "no" || got[0].Decision != "d1" {
+		t.Fatalf("long poll: %+v", got)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("long poll did not return promptly")
+	}
+	if body := readAll(t, get(t, srv.URL+"/answers?since="+itoa(got[0].Seq)+"&wait=1").Body); strings.TrimSpace(body) != "[]" {
+		t.Errorf("since should exclude delivered: %q", body)
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
+
+func TestEventsAndReset(t *testing.T) {
+	srv := newServer(t)
+	resp := get(t, srv.URL+"/events")
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Fatalf("content type %q", ct)
 	}
-	do(t, http.MethodPut, srv.URL+"/files/new.txt", "x")
-	buf := make([]byte, 8192)
+	post(t, srv, `{"title":"Fresh question","type":"confirm"}`, nil)
+	buf := make([]byte, 16384)
 	var got string
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !strings.Contains(got, "new.txt") {
+	for time.Now().Before(deadline) && !strings.Contains(got, "Fresh question") {
 		n, err := resp.Body.Read(buf)
 		got += string(buf[:n])
 		if err != nil {
 			break
 		}
 	}
-	if !strings.Contains(got, "event: tree\n") || !strings.Contains(got, "new.txt") {
+	if !strings.Contains(got, "event: queue\n") || !strings.Contains(got, "Fresh question") {
 		t.Fatalf("stream:\n%s", got)
+	}
+	r, _ := http.Post(srv.URL+"/reset", "", nil)
+	if r.StatusCode != http.StatusNoContent {
+		t.Fatalf("reset: %d", r.StatusCode)
+	}
+	if get(t, srv.URL+"/decisions/d1").StatusCode != http.StatusNotFound {
+		t.Error("reset should forget decisions")
 	}
 }
 
-func TestProxyInjectsCredentialAndStripsPrefix(t *testing.T) {
+func TestProxyInjectsCredentialAndEnforcesAllow(t *testing.T) {
 	var seen *http.Request
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.Clone(r.Context())
@@ -215,9 +243,11 @@ func TestProxyInjectsCredentialAndStripsPrefix(t *testing.T) {
 		Query:  url.Values{"api_key": {"qsecret"}},
 		Allow:  []proxy.Rule{{Method: "GET", Path: "/3/movie/*"}},
 	}
-	srv, _ := newServer(t, u)
+	srv := newServer(t, u)
 
-	resp := do(t, http.MethodGet, srv.URL+"/tmdb/3/movie/429?language=en", "")
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/tmdb/3/movie/429?language=en", nil)
+	req.Header.Set("Authorization", "Bearer stray")
+	resp, _ := http.DefaultClient.Do(req)
 	if resp.StatusCode != http.StatusOK || readAll(t, resp.Body) != `{"ok":true}` {
 		t.Fatalf("proxied: %d", resp.StatusCode)
 	}
@@ -227,68 +257,50 @@ func TestProxyInjectsCredentialAndStripsPrefix(t *testing.T) {
 	if q := seen.URL.Query(); q.Get("api_key") != "qsecret" || q.Get("language") != "en" {
 		t.Errorf("query %q", seen.URL.RawQuery)
 	}
-	if seen.Header.Get("X-Api-Key") != "secret" {
-		t.Errorf("header not injected: %v", seen.Header)
-	}
-	if seen.Header.Get("Authorization") != "" {
-		t.Errorf("client Authorization header leaked upstream")
-	}
-
-	resp = do(t, http.MethodGet, srv.URL+"/upstreams", "")
-	if body := readAll(t, resp.Body); !strings.Contains(body, `"tmdb": [
-    "GET /3/movie/*"
-  ]`) {
-		t.Errorf("upstreams: %q", body)
+	if seen.Header.Get("X-Api-Key") != "secret" || seen.Header.Get("Authorization") != "" {
+		t.Errorf("headers: %v", seen.Header)
 	}
 
 	seen = nil
-	resp = do(t, http.MethodDelete, srv.URL+"/tmdb/3/movie/429", "")
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/tmdb/3/movie/429", nil)
+	resp, _ = http.DefaultClient.Do(req)
 	if body := readAll(t, resp.Body); resp.StatusCode != http.StatusForbidden || !strings.Contains(body, "GET /3/movie/*") {
-		t.Errorf("denied method: %d %q", resp.StatusCode, body)
-	}
-	if resp := do(t, http.MethodGet, srv.URL+"/tmdb/3/account", ""); resp.StatusCode != http.StatusForbidden {
-		t.Errorf("denied path: %d", resp.StatusCode)
+		t.Errorf("denied: %d %q", resp.StatusCode, body)
 	}
 	if seen != nil {
-		t.Errorf("denied request reached the upstream")
+		t.Error("denied request reached the upstream")
+	}
+	if body := readAll(t, get(t, srv.URL+"/upstreams").Body); !strings.Contains(body, `"GET /3/movie/*"`) {
+		t.Errorf("upstreams: %q", body)
+	}
+	if get(t, srv.URL+"/nope/x").StatusCode != http.StatusNotFound {
+		t.Error("unknown upstream should 404")
 	}
 }
 
 func TestUpstreamCannotShadowRoute(t *testing.T) {
-	st, _ := store.Open(t.TempDir())
+	st, _ := decision.Open(t.TempDir())
 	defer st.Close()
 	target, _ := url.Parse("http://example.com")
-	_, err := New(st, nil, Config{Upstreams: []proxy.Upstream{{Name: "files", URL: target}}})
-	if err == nil {
+	if _, err := New(st, Config{Upstreams: []proxy.Upstream{{Name: "decisions", URL: target}}}); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestPlainRoutes(t *testing.T) {
-	srv, _ := newServer(t)
+	srv := newServer(t)
 	for p, want := range map[string]string{
 		"/healthz":  "ok\n",
 		"/version":  "test\n",
 		"/llms.txt": "# sandbox",
 		"/":         "<title>sandbox</title>",
 	} {
-		resp := do(t, http.MethodGet, srv.URL+p, "")
+		resp := get(t, srv.URL+p)
 		if body := readAll(t, resp.Body); resp.StatusCode != http.StatusOK || !strings.Contains(body, want) {
 			t.Errorf("%s: %d %q", p, resp.StatusCode, body)
 		}
 	}
-	resp := do(t, http.MethodGet, srv.URL+"/llms.txt", "")
-	if body := readAll(t, resp.Body); strings.Contains(body, "{{") {
-		t.Errorf("unexpanded placeholder in llms.txt")
-	}
-}
-
-func TestDeadUpstreamExplains(t *testing.T) {
-	target, _ := url.Parse("https://does-not-exist.invalid")
-	srv, _ := newServer(t, proxy.Upstream{Name: "dead", URL: target, Allow: []proxy.Rule{{Method: "*", Path: "/*"}}})
-	resp := do(t, http.MethodGet, srv.URL+"/dead/x", "")
-	body := readAll(t, resp.Body)
-	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(body, "upstream dead:") {
-		t.Fatalf("%d %q", resp.StatusCode, body)
+	if body := readAll(t, get(t, srv.URL+"/llms.txt").Body); strings.Contains(body, "{{") {
+		t.Error("unexpanded placeholder in llms.txt")
 	}
 }
